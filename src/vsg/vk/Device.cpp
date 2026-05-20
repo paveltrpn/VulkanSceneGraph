@@ -53,7 +53,6 @@ static void releaseDeviceID(uint32_t deviceID)
 
 Device::Device(PhysicalDevice* physicalDevice, const QueueSettings& queueSettings, Names layers, Names deviceExtensions, const DeviceFeatures* deviceFeatures, AllocationCallbacks* allocator) :
     deviceID(getUniqueDeviceID()),
-    enabledExtensions(deviceExtensions),
     _instance(physicalDevice->getInstance()),
     _physicalDevice(physicalDevice),
     _allocator(allocator)
@@ -115,6 +114,12 @@ Device::Device(PhysicalDevice* physicalDevice, const QueueSettings& queueSetting
         deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
 #endif
 
+    if (_physicalDevice->supportsDeviceExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
+    {
+        deviceExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        const_cast<bool&>(memory_budget) = true;
+    }
+
     VkDeviceCreateInfo createInfo = {};
     createInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
 
@@ -162,6 +167,7 @@ Device::Device(PhysicalDevice* physicalDevice, const QueueSettings& queueSetting
         }
     }
 
+    const_cast<Names&>(enabledExtensions) = deviceExtensions;
     _extensions = DeviceExtensions::create(this);
 }
 
@@ -208,32 +214,59 @@ bool Device::supportsDeviceExtension(const char* extensionName) const
 
 VkDeviceSize Device::availableMemory(VkMemoryPropertyFlags memoryPropertiesFlags, double allocatedMemoryLimit) const
 {
-    VkPhysicalDeviceMemoryBudgetPropertiesEXT memoryBudget;
-    memoryBudget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
-    memoryBudget.pNext = nullptr;
-
-    VkPhysicalDeviceMemoryProperties2 dmp;
-    dmp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
-    dmp.pNext = &memoryBudget;
-
-    vkGetPhysicalDeviceMemoryProperties2(*(getPhysicalDevice()), &dmp);
-
-    auto& memoryProperties = dmp.memoryProperties;
-
-    VkDeviceSize availableSpace = 0;
-    for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+    if (memory_budget)
     {
-        if ((memoryProperties.memoryTypes[i].propertyFlags & memoryPropertiesFlags) == memoryPropertiesFlags) // supported
+        VkPhysicalDeviceMemoryBudgetPropertiesEXT memoryBudget;
+        memoryBudget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
+        memoryBudget.pNext = nullptr;
+
+        VkPhysicalDeviceMemoryProperties2 dmp;
+        dmp.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2;
+        dmp.pNext = &memoryBudget;
+
+        vkGetPhysicalDeviceMemoryProperties2(*(getPhysicalDevice()), &dmp);
+
+        auto& memoryProperties = dmp.memoryProperties;
+
+        VkDeviceSize availableSpace = 0;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
         {
-            uint32_t heapIndex = memoryProperties.memoryTypes[i].heapIndex;
+            if ((memoryProperties.memoryTypes[i].propertyFlags & memoryPropertiesFlags) == memoryPropertiesFlags) // supported
+            {
+                uint32_t heapIndex = memoryProperties.memoryTypes[i].heapIndex;
 
-            VkDeviceSize heapBudget = static_cast<VkDeviceSize>(static_cast<double>(memoryBudget.heapBudget[heapIndex]) * allocatedMemoryLimit);
-            VkDeviceSize heapUsage = memoryBudget.heapUsage[heapIndex];
-            VkDeviceSize heapAvailable = (heapUsage < heapBudget) ? heapBudget - heapUsage : 0;
-            availableSpace += heapAvailable;
+                VkDeviceSize heapBudget = static_cast<VkDeviceSize>(static_cast<double>(memoryBudget.heapBudget[heapIndex]) * allocatedMemoryLimit);
+                VkDeviceSize heapUsage = memoryBudget.heapUsage[heapIndex];
+                VkDeviceSize heapAvailable = (heapUsage < heapBudget) ? heapBudget - heapUsage : 0;
+                availableSpace += heapAvailable;
 
-            break;
+                break;
+            }
         }
+
+        return availableSpace;
     }
-    return availableSpace;
+    else
+    {
+        VkPhysicalDeviceMemoryProperties memoryProperties;
+        vkGetPhysicalDeviceMemoryProperties(*(getPhysicalDevice()), &memoryProperties);
+
+        VkDeviceSize availableSpace = 0;
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+        {
+            if ((memoryProperties.memoryTypes[i].propertyFlags & memoryPropertiesFlags) == memoryPropertiesFlags) // supported
+            {
+                uint32_t heapIndex = memoryProperties.memoryTypes[i].heapIndex;
+
+                VkDeviceSize heapBudget = static_cast<VkDeviceSize>(static_cast<double>(memoryProperties.memoryHeaps[heapIndex].size) * allocatedMemoryLimit);;
+
+                // unable to estimate usage, so assume whole budget is available and let calling code gracefully handle any memory allocation failures.
+                availableSpace += heapBudget;
+
+                break;
+            }
+        }
+
+        return availableSpace;
+    }
 }
