@@ -114,10 +114,9 @@ Device::Device(PhysicalDevice* physicalDevice, const QueueSettings& queueSetting
         deviceExtensions.push_back(VK_KHR_PORTABILITY_SUBSET_EXTENSION_NAME);
 #endif
 
-    if (_physicalDevice->supportsDeviceExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
+    if (supportsApiVersion(VK_API_VERSION_1_1) && _physicalDevice->supportsDeviceExtension(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME))
     {
         deviceExtensions.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
-        const_cast<bool&>(memory_budget) = true;
     }
 
     VkDeviceCreateInfo createInfo = {};
@@ -214,7 +213,7 @@ bool Device::supportsDeviceExtension(const char* extensionName) const
 
 VkDeviceSize Device::availableMemory(VkMemoryPropertyFlags memoryPropertiesFlags, double allocatedMemoryLimit) const
 {
-    if (memory_budget)
+    if (_extensions->memory_budget)
     {
         VkPhysicalDeviceMemoryBudgetPropertiesEXT memoryBudget;
         memoryBudget.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT;
